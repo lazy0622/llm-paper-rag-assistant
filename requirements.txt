@@ -1,0 +1,17 @@
+fastapi
+uvicorn[standard]
+python-multipart
+pydantic-settings
+langchain
+langchain-community
+langchain-qdrant
+langgraph
+qdrant-client
+pymupdf
+python-docx
+markdown
+ollama
+httpx
+python-dotenv
+socksio
+streamlit
