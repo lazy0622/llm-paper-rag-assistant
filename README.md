@@ -1,6 +1,6 @@
 # LLM Paper RAG Assistant
 
-面向大模型应用开发实习的本地私有化 Agentic RAG 工程项目。项目重点不是训练或微调大模型，而是把文档解析、向量入库、语义检索、Query Rewrite、Hybrid Search、Rerank、Prompt 组织、引用溯源、Agent 工作流、评测与 Bad Case 分析串成一条可运行、可解释、可复盘的工程链路。
+面向论文阅读、实验室知识库问答和本地化论文调研场景的 Agentic RAG 工程项目。项目重点不是训练或微调大模型，而是把文档解析、向量入库、语义检索、Query Rewrite、Hybrid Search、Rerank、Prompt 组织、引用溯源、Agent 工作流、评测与 Bad Case 分析串成一条可运行、可解释、可复盘的工程链路。
 
 ## 1. 项目定位
 
@@ -10,7 +10,7 @@
 | 模块二 | Agentic 论文调研模块 | claim 拆分、证据分级、方法对比、overclaim check、tool_calls 日志、Markdown 报告导出 |
 | 模块三 | RAG 评测与 Bad Case 分析 | QA 批量评测、rewritten_query、source_hit、answer_mode、Hybrid/Rerank 分数、bad_case_type |
 
-适合展示给：大模型应用开发实习生、RAG 知识库实习生、AI Agent 实习生、Python AI 后端实习生。
+适合用于：本地论文知识库问答、RAG 检索链路验证、Agentic 论文调研和模型服务工程化实验。
 
 ## 2. 技术栈
 
@@ -227,17 +227,7 @@ docs/screenshots/README.md
 - Agent 报告页，显示 plan、tool_calls、evidence_items、final_report。
 - 推理网关日志或 metrics 页面，证明上层 RAG 通过统一网关调用模型。
 
-## 10. 面试可讲点
-
-- 文档解析：PDF 按页保留来源，回答后可回到具体文件和页码核验。
-- RAG 链路：文档解析、chunk 切分、Embedding、Qdrant 入库、Query Rewrite、Hybrid Search、Rerank、Prompt 生成和答案返回。
-- 回答模式：区分知识库依据、模型通用知识补充、严格拒答和 metadata 查询。
-- 引用溯源：sources 返回文件名、页码、chunk_id、score、rerank_score、final_score、retrieval_source 和 evidence_level。
-- 评测闭环：通过 QA 批量评测记录 source_hit、answer_mode、Bad Case 类型，用于定位检索和回答问题。
-- Agentic RAG：把普通问答升级为 claim 拆分、证据分级、方法对比和报告生成。
-- 工程边界：当前是本地可运行工程实践，不是生产级平台，没有真实用户上线，也没有训练或微调大模型。
-
-## 11. 当前局限与后续优化
+## 10. 当前局限与后续优化
 
 - 当前 Rerank 是规则版，不是 cross-encoder reranker；复杂问题仍可能召回弱相关片段。
 - Query Rewrite 依赖本地 LLM，偶尔可能改写偏题，评测时需要记录并分析。
@@ -249,12 +239,12 @@ docs/screenshots/README.md
 
 | 优先级 | 优化项 | 价值 |
 |---|---|---|
-| P0 | 完整跑 QA 并整理 Bad Case | 给简历和面试补真实评测证据 |
+| P0 | 完整跑 QA 并整理 Bad Case | 为检索质量分析和后续优化提供真实评测证据 |
 | P1 | 接入 cross-encoder reranker | 强化检索质量优化能力 |
 | P1 | 增加文档版本管理和权限控制 | 更接近企业知识库需求 |
 | P2 | 增加 RAGAS 自动评分 | 补充 faithfulness / context precision 等指标 |
 
-## 12. 推理网关联动说明
+## 11. 推理网关联动说明
 
 本项目支持通过 `llm-local-inference-gateway` 统一调用本地大模型服务。开启 `.env` 中的 `USE_INFERENCE_GATEWAY=true` 后，RAG/Agent 系统不再直接访问 Ollama，而是通过推理网关调用：
 
