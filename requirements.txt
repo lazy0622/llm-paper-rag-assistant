@@ -8,6 +8,7 @@ langchain-qdrant
 langgraph
 qdrant-client
 pymupdf
+msvc-runtime; sys_platform == "win32"
 python-docx
 markdown
 ollama

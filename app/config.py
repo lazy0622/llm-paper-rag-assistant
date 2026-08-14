@@ -23,15 +23,22 @@ class Settings(BaseSettings):
     ollama_embedding_model: str = "mxbai-embed-large"
     qdrant_url: str = "http://127.0.0.1:6333"
     qdrant_collection: str = "llm_papers"
+    qdrant_hybrid_collection: str = "llm_papers_hybrid"
+    dense_vector_name: str = "dense"
+    sparse_vector_name: str = "text"
     chunk_size: int = 800
     chunk_overlap: int = 120
+    enable_contextual_chunk_embedding: bool = True
     top_k: int = 5
     score_threshold: float = 0.3
     enable_query_rewrite: bool = True
     query_rewrite_model: str = ""
     enable_hybrid_search: bool = True
     enable_keyword_rerank: bool = True
+    enable_native_sparse_search: bool = True
     reranker_provider: str = "rule"
+    reranker_model: str = "BAAI/bge-reranker-v2-m3"
+    reranker_batch_size: int = 16
     rerank_candidate_multiplier: int = 3
     keyword_candidate_limit: int = 30
     use_inference_gateway: bool = False
@@ -39,6 +46,9 @@ class Settings(BaseSettings):
     inference_gateway_api_key: str = "dev-local-key"
     upload_dir: Path = PROJECT_ROOT / "data" / "uploads"
     rag_log_path: Path = PROJECT_ROOT / "reports" / "rag_chat_runs.jsonl"
+    ingestion_job_dir: Path = PROJECT_ROOT / "reports" / "ingestion_jobs"
+    ingestion_workers: int = 2
+    ingestion_max_attempts: int = 3
 
     class Config:
         env_file = ".env"

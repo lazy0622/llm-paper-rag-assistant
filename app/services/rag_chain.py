@@ -22,7 +22,7 @@ GROUNDED_PROMPT = PromptTemplate.from_template(
 
 【回答要求】
 {style_instruction}
-无论哪种详细程度，都必须引用文件名和页码；如果依据不足，明确说明不确定点。
+无论哪种详细程度，都必须在每个主要事实结论后使用结构化引用标记 [S1]、[S2] 等，并同时写出文件名和页码；如果依据不足，明确说明不确定点。只能使用已检索资料中存在的标记。
 """
 )
 
@@ -185,8 +185,11 @@ def _format_context(chunks: list[dict]) -> str:
         page = chunk.get("page")
         page_text = f"p.{page}" if page else "page unknown"
         # 引用信息放进 prompt，模型回答时更容易带上来源。
+        citation_id = f"S{index}"
+        title = chunk.get("document_title") or chunk.get("file_name", "unknown")
+        section = chunk.get("section") or "unknown section"
         parts.append(
-            f"[{index}] {chunk.get('file_name', 'unknown')} {page_text} "
-            f"chunk={chunk.get('chunk_id')}\n{chunk.get('content', '')}"
+            f"[{citation_id}] {title} | {chunk.get('file_name', 'unknown')} {page_text} "
+            f"section={section} chunk={chunk.get('chunk_id')}\n{chunk.get('content', '')}"
         )
     return "\n\n".join(parts)

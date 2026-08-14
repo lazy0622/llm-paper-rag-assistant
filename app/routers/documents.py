@@ -1,16 +1,29 @@
 from pathlib import Path
 import re
+import uuid
 
 from fastapi import APIRouter, UploadFile
 from fastapi import HTTPException
 
 from app.config import settings
-from app.schemas import DocumentActionResponse, DocumentSummary, IngestResponse
-from app.services.document_loader import load_document
-from app.services.splitter import split_pages
-from app.services.vector_store import delete_document, list_indexed_documents, upsert_chunks
+from app.schemas import DocumentActionResponse, DocumentSummary, IngestResponse, IngestionJobResponse
+from app.services.ingestion_jobs import enqueue_document_ingestion, get_ingestion_job, list_ingestion_jobs
+from app.services.vector_store import delete_document, list_indexed_documents
 
 router = APIRouter()
+
+
+@router.get("/jobs", response_model=list[IngestionJobResponse])
+def ingestion_jobs(limit: int = 50) -> list[IngestionJobResponse]:
+    return [IngestionJobResponse(**job) for job in list_ingestion_jobs(limit=limit)]
+
+
+@router.get("/jobs/{job_id}", response_model=IngestionJobResponse)
+def ingestion_job(job_id: str) -> IngestionJobResponse:
+    job = get_ingestion_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Ingestion job not found.")
+    return IngestionJobResponse(**job)
 
 
 @router.get("", response_model=list[DocumentSummary])
@@ -33,17 +46,21 @@ def reindex_document(file_name: str) -> IngestResponse:
     if not target_path.exists():
         raise HTTPException(status_code=404, detail="Original uploaded file not found.")
 
-    try:
-        delete_document(safe_name)
-        pages = load_document(target_path)
-        chunks = split_pages(pages)
-        stored = upsert_chunks(chunks)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Document reindex failed: {exc}") from exc
-
-    if stored == 0:
-        raise HTTPException(status_code=400, detail="No valid text chunks were extracted from the document.")
-    return IngestResponse(file_name=safe_name, chunks=stored, status="reindexed")
+    job = enqueue_document_ingestion(
+        file_name=safe_name,
+        source_path=target_path,
+        target_path=target_path,
+        replace_on_success=False,
+    )
+    return IngestResponse(
+        file_name=safe_name,
+        chunks=job["chunks"],
+        status=job["status"],
+        job_id=job["job_id"],
+        document_id=job.get("document_id"),
+        content_hash=job.get("content_hash"),
+        error=job.get("error"),
+    )
 
 
 @router.post("/upload", response_model=IngestResponse)
@@ -55,19 +72,31 @@ async def upload_document(file: UploadFile) -> IngestResponse:
 
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
     target_path = settings.upload_dir / file_name
-    target_path.write_bytes(await file.read())
+    temp_path = settings.upload_dir / f".{file_name}.{uuid.uuid4().hex}.tmp{suffix}"
+    temp_path.write_bytes(await file.read())
 
     try:
-        pages = load_document(target_path)
-        chunks = split_pages(pages)
-        stored = upsert_chunks(chunks)
+        # Parsing and embedding happen in a durable background job. The
+        # previous indexed version remains available until the job succeeds.
+        job = enqueue_document_ingestion(
+            file_name=file_name,
+            source_path=temp_path,
+            target_path=target_path,
+            replace_on_success=True,
+        )
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Document ingestion failed: {exc}") from exc
+        temp_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"Document ingestion job creation failed: {exc}") from exc
 
-    if stored == 0:
-        raise HTTPException(status_code=400, detail="No valid text chunks were extracted from the document.")
-
-    return IngestResponse(file_name=file_name, chunks=stored, status="indexed")
+    return IngestResponse(
+        file_name=file_name,
+        chunks=job["chunks"],
+        status=job["status"],
+        job_id=job["job_id"],
+        document_id=job.get("document_id"),
+        content_hash=job.get("content_hash"),
+        error=job.get("error"),
+    )
 
 
 def _safe_file_name(file_name: str) -> str:

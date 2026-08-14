@@ -61,6 +61,20 @@ def annotate_sources(chunks: list[dict], query: str) -> list[dict]:
     return [{**chunk, **_grade_chunk(query, chunk)} for chunk in chunks]
 
 
+def validate_citation_markers(answer: str, source_count: int) -> list[str]:
+    """Check that a grounded answer only references returned source IDs."""
+    if source_count == 0:
+        return []
+    markers = re.findall(r"\[S(\d+)\]", answer or "")
+    if not markers:
+        return ["回答没有找到 [S1] 形式的结构化引用标记。"]
+    valid_ids = {str(index) for index in range(1, source_count + 1)}
+    unknown = sorted({marker for marker in markers if marker not in valid_ids}, key=int)
+    if unknown:
+        return [f"回答引用了不存在的 source ID：{', '.join(f'[S{item}]' for item in unknown)}。"]
+    return []
+
+
 def grade_claim_evidence(claim: str, chunks: list[dict]) -> dict:
     """Summarize whether retrieved chunks really support a claim."""
     annotated = annotate_sources(chunks, claim)
