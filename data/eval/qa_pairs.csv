@@ -1,21 +1,21 @@
-question,expected_answer,source_file,difficulty
-RAG 论文为什么认为仅依赖参数化记忆会有局限？,模型参数中的知识难以及时更新且难以提供可追溯依据,01_rag_knowledge_intensive_nlp.pdf,easy
-RAG 模型中的 parametric memory 和 non-parametric memory 分别指什么？,参数化记忆通常是预训练生成模型 非参数化记忆是外部可检索知识库或向量索引,01_rag_knowledge_intensive_nlp.pdf,medium
-RAG-Sequence 和 RAG-Token 的区别是什么？,RAG-Sequence 对整个生成序列使用相同检索文档 RAG-Token 可在不同 token 位置使用不同文档,01_rag_knowledge_intensive_nlp.pdf,medium
-RAG 相比纯生成模型主要提升了哪些能力？,提升知识密集任务表现 生成更具体和事实性更强的回答 并支持来源依据,01_rag_knowledge_intensive_nlp.pdf,easy
-Self-RAG 要解决传统 RAG 的什么问题？,传统 RAG 常固定检索固定数量文档 可能检索不必要或不相关内容 Self-RAG 让模型按需检索并自我反思,02_self_rag.pdf,easy
-Self-RAG 中 reflection tokens 的作用是什么？,用于让模型在生成过程中判断是否检索 评价检索内容和自身回答质量,02_self_rag.pdf,medium
-Self-RAG 如何提升回答的 factuality 和 citation accuracy？,通过按需检索 生成后自我评价 以及对检索证据和生成内容进行反思来提升事实性和引用准确性,02_self_rag.pdf,medium
-Self-RAG 和普通 RAG 在检索策略上有什么区别？,普通 RAG 多为固定检索 Self-RAG 可以根据任务需求决定是否检索以及如何使用检索内容,02_self_rag.pdf,hard
-CRAG 为什么需要 retrieval evaluator？,因为检索结果可能不准确 evaluator 用于评估检索质量并决定后续纠错或补充检索策略,03_corrective_rag.pdf,easy
-CRAG 在检索结果不可靠时会采取什么思路？,根据检索置信度触发不同知识获取动作 并通过分解重组过滤无关内容,03_corrective_rag.pdf,medium
-CRAG 中 decompose-then-recompose 的目的是什么？,把检索文档分解为更细粒度内容 选择关键知识并重组 从而减少无关文本干扰,03_corrective_rag.pdf,medium
-CRAG 对我的论文知识库项目有什么启发？,可以增加检索质量判断 低分拒答和检索结果过滤机制 提升 RAG 鲁棒性,03_corrective_rag.pdf,hard
-GraphRAG 为什么说传统 RAG 不擅长 global questions？,传统 RAG 更适合局部检索 全局问题需要对整个语料进行主题级或社区级总结,04_graphrag_local_to_global.pdf,easy
-GraphRAG 的基本索引思路是什么？,先从文档中抽取实体和关系构建图 再生成社区摘要 用于回答全局性问题,04_graphrag_local_to_global.pdf,medium
-GraphRAG 中 community summaries 有什么作用？,把相关实体社区的信息预先总结 让系统能在大规模语料上回答整体性和主题性问题,04_graphrag_local_to_global.pdf,medium
-GraphRAG 适合解决论文知识库中的哪类问题？,适合回答多篇论文共同主题 技术路线对比 研究趋势总结等全局问题,04_graphrag_local_to_global.pdf,hard
-ReAct 的核心思想是什么？,让语言模型交替生成 reasoning traces 和 task-specific actions 结合推理与行动,05_react_reasoning_acting.pdf,easy
-ReAct 为什么能缓解幻觉和错误传播？,模型可以通过外部工具或环境获取信息 并用推理轨迹更新行动计划 而不是只依赖内部生成,05_react_reasoning_acting.pdf,medium
-ReAct 中 action 的含义是什么？,模型调用外部工具 API 知识库或环境来获取额外信息或执行任务,05_react_reasoning_acting.pdf,medium
-ReAct 对后续 Agentic RAG 项目有什么启发？,可以把检索 总结 对比等能力封装成工具 让模型按任务选择工具并形成可解释执行链路,05_react_reasoning_acting.pdf,hard
+question,expected_answer,source_file,difficulty,gold_source_files,gold_chunk_ids,gold_pages,top_k
+RAG 论文为什么认为仅依赖参数化记忆会有局限？,模型参数中的知识难以及时更新且难以提供可追溯依据,01_rag_knowledge_intensive_nlp.pdf,easy,01_rag_knowledge_intensive_nlp.pdf,9d2200c8d68d665d57c412d22f7f32d31dfa47a6,1,5
+RAG 模型中的 parametric memory 和 non-parametric memory 分别指什么？,参数化记忆通常是预训练生成模型 非参数化记忆是外部可检索知识库或向量索引,01_rag_knowledge_intensive_nlp.pdf,medium,01_rag_knowledge_intensive_nlp.pdf,00fe55394138d6004343e371930e57e4a3abe933,3,5
+RAG-Sequence 和 RAG-Token 的区别是什么？,RAG-Sequence 对整个生成序列使用相同检索文档 RAG-Token 可在不同 token 位置使用不同文档,01_rag_knowledge_intensive_nlp.pdf,medium,01_rag_knowledge_intensive_nlp.pdf,b1c6c976ed1e4dc4c5d05dab511a8e65aa635e6a;14a560f9954a199ffe54b21c0c0894efbb317dce,3,5
+RAG 相比纯生成模型主要提升了哪些能力？,提升知识密集任务表现 生成更具体和事实性更强的回答 并支持来源依据,01_rag_knowledge_intensive_nlp.pdf,easy,01_rag_knowledge_intensive_nlp.pdf,f50a37ca7f1ef93110f422c7e241f9b55b7f6fcb;9d2200c8d68d665d57c412d22f7f32d31dfa47a6,1;2,5
+Self-RAG 要解决传统 RAG 的什么问题？,传统 RAG 常固定检索固定数量文档 可能检索不必要或不相关内容 Self-RAG 让模型按需检索并自我反思,02_self_rag.pdf,easy,02_self_rag.pdf,d3559d6ea5a1672e17283d1487d34ae124cb55f9,3,5
+Self-RAG 中 reflection tokens 的作用是什么？,用于让模型在生成过程中判断是否检索 评价检索内容和自身回答质量,02_self_rag.pdf,medium,02_self_rag.pdf,1ec1f8444648c5cc4c1cd41f97382dcf5514e642,2,5
+Self-RAG 如何提升回答的 factuality 和 citation accuracy？,通过按需检索 生成后自我评价 以及对检索证据和生成内容进行反思来提升事实性和引用准确性,02_self_rag.pdf,medium,02_self_rag.pdf,a4ea1a899b3040107a139e1eb646cefde27fa51a;1ec1f8444648c5cc4c1cd41f97382dcf5514e642,2,5
+Self-RAG 和普通 RAG 在检索策略上有什么区别？,普通 RAG 多为固定检索 Self-RAG 可以根据任务需求决定是否检索以及如何使用检索内容,02_self_rag.pdf,hard,02_self_rag.pdf,d7dd64b2c5f65e7f8930976e623b80e93b6d4f43,6,5
+CRAG 为什么需要 retrieval evaluator？,因为检索结果可能不准确 evaluator 用于评估检索质量并决定后续纠错或补充检索策略,03_corrective_rag.pdf,easy,03_corrective_rag.pdf,eee76c36bc1a1c78ecabcf0c826e5735d3cf0334,2,5
+CRAG 在检索结果不可靠时会采取什么思路？,根据检索置信度触发不同知识获取动作 并通过分解重组过滤无关内容,03_corrective_rag.pdf,medium,03_corrective_rag.pdf,ef39514343facae883b7560e8eb28de68a00a9da;6f02b6da192daba2c0df34cd7f88da635eb3fc4c,3;6,5
+CRAG 中 decompose-then-recompose 的目的是什么？,把检索文档分解为更细粒度内容 选择关键知识并重组 从而减少无关文本干扰,03_corrective_rag.pdf,medium,03_corrective_rag.pdf,6f02b6da192daba2c0df34cd7f88da635eb3fc4c,6,5
+CRAG 对我的论文知识库项目有什么启发？,可以增加检索质量判断 低分拒答和检索结果过滤机制 提升 RAG 鲁棒性,03_corrective_rag.pdf,hard,03_corrective_rag.pdf,eee76c36bc1a1c78ecabcf0c826e5735d3cf0334;6f02b6da192daba2c0df34cd7f88da635eb3fc4c,2;6,5
+GraphRAG 为什么说传统 RAG 不擅长 global questions？,传统 RAG 更适合局部检索 全局问题需要对整个语料进行主题级或社区级总结,04_graphrag_local_to_global.pdf,easy,04_graphrag_local_to_global.pdf,35f086976d8c53c7f84273e10328e73db9e570bb,1,5
+GraphRAG 的基本索引思路是什么？,先从文档中抽取实体和关系构建图 再生成社区摘要 用于回答全局性问题,04_graphrag_local_to_global.pdf,medium,04_graphrag_local_to_global.pdf,f49a3a500c6766a0076229c711e5d7676fcdfc0d,2,5
+GraphRAG 中 community summaries 有什么作用？,把相关实体社区的信息预先总结 让系统能在大规模语料上回答整体性和主题性问题,04_graphrag_local_to_global.pdf,medium,04_graphrag_local_to_global.pdf,cb54ba7cc7bfc9bada04dacebb078d4a474902f3,6,5
+GraphRAG 适合解决论文知识库中的哪类问题？,适合回答多篇论文共同主题 技术路线对比 研究趋势总结等全局问题,04_graphrag_local_to_global.pdf,hard,04_graphrag_local_to_global.pdf,35f086976d8c53c7f84273e10328e73db9e570bb;f49a3a500c6766a0076229c711e5d7676fcdfc0d,1;2,5
+ReAct 的核心思想是什么？,让语言模型交替生成 reasoning traces 和 task-specific actions 结合推理与行动,05_react_reasoning_acting.pdf,easy,05_react_reasoning_acting.pdf,d1066fc7fbbe67d9a6fee7f43f2401b2c7a0171c,1,5
+ReAct 为什么能缓解幻觉和错误传播？,模型可以通过外部工具或环境获取信息 并用推理轨迹更新行动计划 而不是只依赖内部生成,05_react_reasoning_acting.pdf,medium,05_react_reasoning_acting.pdf,dd4b54e24ad2382f915f057469fe7d3242a89b14,1,5
+ReAct 中 action 的含义是什么？,模型调用外部工具 API 知识库或环境来获取额外信息或执行任务,05_react_reasoning_acting.pdf,medium,05_react_reasoning_acting.pdf,96cef4ac9a2e9823cde5aec12e352fa22d3b02cf,3,5
+ReAct 对后续 Agentic RAG 项目有什么启发？,可以把检索 总结 对比等能力封装成工具 让模型按任务选择工具并形成可解释执行链路,05_react_reasoning_acting.pdf,hard,05_react_reasoning_acting.pdf,99921f68412a08e03903311630e53e95281e309a,4,5

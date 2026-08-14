@@ -25,7 +25,7 @@
 
 ## 2. 总体技术架构
 
-系统整体由五层组成：前端页面、后端 API、RAG 服务层、Agent 编排层、数据与报告层。
+系统整体由六层组成：前端页面、后端 API、异步入库层、RAG 服务层、Agent 编排层、数据与评测层。
 
 ```mermaid
 flowchart TD
@@ -38,8 +38,12 @@ flowchart TD
 
     DocRouter --> Loader["文档解析 document_loader"]
     Loader --> Splitter["chunk 切分 splitter"]
-    Splitter --> Embed["Ollama Embedding"]
-    Embed --> Qdrant["Qdrant 向量库"]
+    Splitter --> Job["持久化 ingestion job"]
+    Job --> Embed["Ollama Embedding"]
+    Splitter --> Sparse["Native Sparse Encoder"]
+    Embed --> Dense["Dense vector"]
+    Dense --> Qdrant["Qdrant Hybrid Collection"]
+    Sparse --> Qdrant
 
     ChatRouter --> Search["向量检索 vector_store"]
     Search --> Prompt["RAG Prompt rag_chain"]
@@ -59,8 +63,9 @@ flowchart TD
 |---|---|---|
 | 后端 API | FastAPI | 提供文档上传、问答、Agent 调研、历史 run 查询等 RESTful 接口 |
 | 前端页面 | Streamlit | 提供文档上传、知识库问答、Agent 调研、报告下载等交互页面 |
-| 向量数据库 | Qdrant | 存储 chunk 向量和 payload，支持 TopK 相似度检索 |
+| 向量数据库 | Qdrant | 存储 dense 向量、原生 sparse/IDF 向量和 payload，支持 hybrid TopK 检索 |
 | 本地模型服务 | Ollama | 调用本地 embedding 模型和 chat 模型 |
+| 入库任务层 | ThreadPoolExecutor + JSON job store | 异步解析/Embedding/upsert，失败重试，进程重启后恢复 pending job |
 | RAG 编排 | LangChain PromptTemplate | 管理 grounded/fallback Prompt 模板 |
 | Agent 编排 | LangGraph StateGraph | 串联任务规划、claim 拆分、检索、证据分级、报告生成等节点 |
 | 容器服务 | Docker Compose | 启动 Qdrant，预留 API 容器化运行方式 |
@@ -69,7 +74,7 @@ flowchart TD
 
 | 文件 | 作用 |
 |---|---|
-| `.env.example` | 项目环境变量模板，配置 Ollama、Qdrant、chunk 参数、检索阈值等 |
+| `.env.example` | 项目环境变量模板，配置 Ollama、Qdrant、chunk、hybrid 和入库任务参数等 |
 | `requirements.txt` | Python 依赖清单，包括 FastAPI、LangChain、LangGraph、Qdrant、Streamlit 等 |
 | `docker-compose.yml` | 定义 Qdrant 服务和 API 服务，其中 Qdrant 数据挂载到 `data/qdrant` |
 | `Dockerfile` | API 服务容器化构建文件 |
@@ -80,10 +85,15 @@ flowchart TD
 OLLAMA_CHAT_MODEL=qwen2.5:7b
 OLLAMA_EMBEDDING_MODEL=mxbai-embed-large
 QDRANT_COLLECTION=llm_papers
+QDRANT_HYBRID_COLLECTION=llm_papers_hybrid
+DENSE_VECTOR_NAME=dense
+SPARSE_VECTOR_NAME=text
 CHUNK_SIZE=800
 CHUNK_OVERLAP=120
 TOP_K=5
 SCORE_THRESHOLD=0.3
+ENABLE_NATIVE_SPARSE_SEARCH=true
+ENABLE_CONTEXTUAL_CHUNK_EMBEDDING=true
 ```
 
 ## 3. 文件结构说明
@@ -109,7 +119,9 @@ llm-paper-rag-assistant/
 │   ├── services/
 │   │   ├── document_loader.py
 │   │   ├── splitter.py
+│   │   ├── ingestion_jobs.py
 │   │   ├── llm_client.py
+│   │   ├── sparse_encoder.py
 │   │   ├── vector_store.py
 │   │   ├── rag_chain.py
 │   │   ├── evidence.py
@@ -124,13 +136,20 @@ llm-paper-rag-assistant/
 │   └── qdrant/
 ├── reports/
 │   ├── rag_eval_results.csv
+│   ├── rag_eval_manifest.json
+│   ├── rag_ab/
+│   │   ├── ab_comparison.json
+│   │   └── ab_comparison.md
+│   ├── ingestion_jobs/
 │   ├── agent_runs/
 │   │   ├── {run_id}.json
 │   │   └── {run_id}.md
-│   ├── resume_rag_agent_intern.md
-│   └── interview_pack_rag_agent.md
 └── scripts/
-    └── evaluate_rag.py
+    ├── evaluate_rag.py
+    ├── run_rag_ab.py
+    ├── preflight_rag_eval.py
+    ├── migrate_sparse_index.py
+    └── validate_eval_ground_truth.py
 ```
 
 核心文件职责：
@@ -140,19 +159,23 @@ llm-paper-rag-assistant/
 | `app/main.py` | 创建 FastAPI 应用并注册 `health`、`documents`、`chat`、`agent` 路由 |
 | `app/config.py` | 读取配置，设置项目根目录、Ollama/Qdrant 地址、chunk 参数、检索阈值，并处理本地代理绕过 |
 | `app/schemas.py` | 定义 API 请求和响应结构，如 `ChatRequest`、`ChatResponse`、`ResearchResponse`、`SourceChunk` |
-| `app/routers/documents.py` | 实现文档上传、文件名清洗、文档解析、切分、向量入库、知识库文件清单 |
-| `app/routers/chat.py` | 实现普通 RAG 问答、metadata 问题识别、严格知识库模式、补充回答模式、sources 返回 |
+| `app/routers/documents.py` | 实现文档上传、文件名清洗、异步入库任务查询、重建索引和知识库文件清单 |
+| `app/routers/chat.py` | 实现普通 RAG 问答、metadata 问题识别、严格知识库模式、补充回答模式、sources/citations 返回 |
 | `app/routers/agent.py` | 实现 Agent 调研接口、历史 run 查询、Markdown 报告下载 |
-| `app/services/document_loader.py` | 解析 PDF、DOCX、Markdown、TXT，并保留文件名和页码 |
-| `app/services/splitter.py` | 使用 LangChain `RecursiveCharacterTextSplitter` 做 chunk 切分，生成稳定 chunk_id |
+| `app/services/document_loader.py` | 解析 PDF、DOCX、Markdown、TXT，并保留文档标题、section、文件哈希和页码 |
+| `app/services/splitter.py` | 使用 LangChain `RecursiveCharacterTextSplitter` 做 chunk 切分，生成稳定 chunk_id、parent_chunk_id 和 contextual embedding text |
+| `app/services/ingestion_jobs.py` | 持久化异步入库 job，处理状态、重试、临时文件替换和重启恢复 |
 | `app/services/llm_client.py` | 封装 Ollama embedding 和 chat 调用，使用 `trust_env=False` 避免本地请求误走代理 |
-| `app/services/vector_store.py` | 封装 Qdrant collection 创建、向量写入、TopK 检索、文件清单聚合、低质量片段过滤 |
-| `app/services/rag_chain.py` | 使用 LangChain `PromptTemplate` 管理 grounded/fallback Prompt 和回答模式判别 |
-| `app/services/evidence.py` | 实现 claim 拆分、sources 证据分级、证据地图格式化、overclaim 检查 |
+| `app/services/sparse_encoder.py` | 为中英文论文术语生成确定性的 sparse lexical vector，交给 Qdrant IDF index |
+| `app/services/vector_store.py` | 封装 legacy dense 与 named dense+sparse hybrid collection、迁移、TopK 检索、版本清理和文件清单聚合 |
+| `app/services/rag_chain.py` | 使用 LangChain `PromptTemplate` 管理 grounded/fallback Prompt 和 `[S1]` 引用契约 |
+| `app/services/evidence.py` | 实现 claim 拆分、sources 证据分级、结构化引用校验、证据地图格式化和 overclaim 检查 |
 | `app/services/agent_run_store.py` | 保存和读取 Agent run，输出 JSON 执行日志和 Markdown 调研报告 |
 | `app/agent/research_agent.py` | 使用 LangGraph 编排 Agentic RAG 工作流 |
 | `streamlit_app.py` | Streamlit 前端，包含 RAG 问答页、论文调研 Agent 页、历史记录和报告下载 |
-| `scripts/evaluate_rag.py` | 批量读取 `qa_pairs.csv`，调用 RAG 链路并输出评测结果 CSV |
+| `scripts/evaluate_rag.py` | 批量读取 `qa_pairs.csv`，调用 RAG 链路并输出指标、Bad Case 和可复现 manifest |
+| `scripts/run_rag_ab.py` | 隔离运行 rule/Cross-Encoder Rerank，输出 A/B 指标对比 |
+| `scripts/preflight_rag_eval.py` | 检查 Qdrant、Ollama/推理网关和可选 Cross-Encoder 依赖 |
 
 ## 4. 模块一：论文知识库 RAG 问答系统
 
@@ -166,36 +189,42 @@ llm-paper-rag-assistant/
 
 | 功能 | 实现说明 |
 |---|---|
-| 文档上传 | `POST /documents/upload` 接收文件，支持 PDF、DOCX、Markdown、TXT |
+| 文档上传 | `POST /documents/upload` 接收文件，创建异步 job，支持 PDF、DOCX、Markdown、TXT |
+| 入库任务 | `GET /documents/jobs` 和 `GET /documents/jobs/{job_id}` 查看状态、attempts、chunks 和错误 |
 | 文件名安全处理 | `_safe_file_name` 去除路径和特殊字符，避免覆盖非预期文件 |
-| 文档解析 | PDF 用 PyMuPDF 按页解析，DOCX 用 python-docx 读取段落，文本类文件按 UTF-8 读取 |
+| 文档解析 | PDF 用 PyMuPDF 按页解析，DOCX 用 python-docx 读取段落，文本类文件按 UTF-8 读取，并保留 document_title/section |
 | chunk 切分 | 使用 LangChain `RecursiveCharacterTextSplitter`，默认 `chunk_size=800`、`chunk_overlap=120` |
-| Embedding | 调用 Ollama `/api/embed`，旧版本自动回退 `/api/embeddings` |
-| 向量入库 | Qdrant collection 使用 cosine 距离，payload 保存 `chunk_id/file_name/page/content` |
+| Embedding | 对标题/section/content 生成 contextual embedding text，调用 Ollama `/api/embed`，旧版本自动回退 `/api/embeddings` |
+| 向量入库 | 同时维护 legacy dense collection 和 named dense+sparse hybrid collection；payload 保存 `chunk_id/file_name/page/content/document_id/index_version` |
+| Hybrid 检索 | dense 语义召回 + Qdrant 原生 sparse/IDF lexical 召回，进入 RRF、keyword overlap 和 Rerank；sidecar 不完整时回退旧 dense + payload keyword |
 | 语义检索 | 用户问题转 embedding 后在 Qdrant TopK 检索，并按 `score_threshold` 过滤低分结果 |
 | 低质量片段过滤 | 根据控制字符比例、异常符号比例过滤 PDF 解析质量差的片段 |
 | RAG 回答 | grounded Prompt 要求模型只依据检索资料回答，资料不足时说明依据不足 |
 | 补充回答 | 知识库不足时可调用本地模型通用知识补充，但不返回 sources |
 | metadata 查询 | “知识库有哪些论文”等问题不走向量检索，直接聚合 Qdrant payload 返回文件清单 |
 | 回答详细程度 | `brief`、`standard`、`detailed` 三档回答风格 |
-| sources 溯源 | grounded 回答返回文件名、页码、chunk_id、score、证据等级和理由 |
+| sources 溯源 | grounded 回答返回文件名、标题、section、页码、chunk_id、score、证据等级和理由，并通过 `[S1]` 与 `citations` 对齐 |
 
 ### 4.3 数据流
 
 ```mermaid
 flowchart LR
-    Upload["上传 PDF/DOCX/MD/TXT"] --> Save["保存到 data/uploads"]
-    Save --> Parse["document_loader 解析文本和页码"]
-    Parse --> Split["splitter 切分 chunk"]
-    Split --> Embed["Ollama Embedding"]
-    Embed --> Upsert["写入 Qdrant"]
+    Upload["上传 PDF/DOCX/MD/TXT"] --> Save["保存临时文件"]
+    Save --> Job["创建持久化 ingestion job"]
+    Job --> Parse["document_loader 解析文本、标题、section 和页码"]
+    Parse --> Split["splitter 切分 chunk + contextual text"]
+    Split --> Embed["Ollama dense embedding"]
+    Split --> Sparse["native sparse encoding"]
+    Embed --> Upsert["Qdrant dense+sparse upsert"]
+    Sparse --> Upsert
+    Upsert --> Replace["成功后替换原文件并清理旧 index version"]
 
     Question["用户问题"] --> QEmbed["问题向量化"]
-    QEmbed --> Search["Qdrant TopK 检索"]
+    QEmbed --> Search["Qdrant dense+sparse TopK 检索"]
     Search --> Filter["score_threshold + 低质量过滤"]
     Filter --> Prompt["拼接 grounded Prompt"]
     Prompt --> Chat["Ollama Chat Model"]
-    Chat --> Answer["answer + answer_mode + sources"]
+    Chat --> Answer["answer + answer_mode + sources + citations"]
 ```
 
 ### 4.4 核心接口
@@ -204,8 +233,9 @@ flowchart LR
 |---|---|---|---|
 | `GET /health` | 无 | 服务状态 | 判断 FastAPI 是否启动 |
 | `GET /documents` | 无 | 文档列表 | 查看当前知识库已入库文件、chunk 数、页码 |
-| `POST /documents/upload` | 上传文件 | `file_name/chunks/status` | 文档解析、切分、向量化、写入 Qdrant |
-| `POST /chat` | `question/top_k/allow_fallback/answer_style` | `answer/answer_mode/sources` | 基于知识库问答 |
+| `POST /documents/upload` | 上传文件 | `file_name/status/job_id` | 创建异步文档解析、切分、向量化、写入 Qdrant 任务 |
+| `GET /documents/jobs/{job_id}` | job id | `status/attempts/chunks/error` | 查询异步入库进度和失败原因 |
+| `POST /chat` | `question/top_k/allow_fallback/answer_style` | `answer/answer_mode/sources/citations` | 基于知识库问答 |
 
 `POST /chat` 请求示例：
 
@@ -233,9 +263,10 @@ flowchart LR
 
 ```text
 app/routers/documents.py
+  -> app/services/ingestion_jobs.py
   -> app/services/document_loader.py
   -> app/services/splitter.py
-  -> app/services/llm_client.py
+  -> app/services/llm_client.py + sparse_encoder.py
   -> app/services/vector_store.py
   -> Qdrant
 ```
@@ -254,9 +285,12 @@ app/routers/chat.py
 ### 4.6 关键设计点
 
 - PDF 按页解析，而不是整篇拼接，是为了让回答能返回具体页码，方便人工核验。
-- chunk_id 基于文件名、页码、序号和内容生成，重复上传相同文档时能稳定覆盖同一批 point。
+- chunk_id 基于 document_id、文件名、页码、序号和内容生成，重复上传相同文档时能稳定覆盖同一批 point；gold chunk 标注由校验脚本保护。
 - Qdrant point id 使用 UUIDv5 从 chunk_id 派生，保证稳定且唯一。
-- payload 保存 `chunk_id/file_name/page/content`，向量负责检索，payload 负责引用溯源。
+- payload 保存 `chunk_id/file_name/page/content/document_id/content_hash/index_version` 及文档标题/section，向量负责检索，payload 负责引用溯源。
+- `llm_papers_hybrid` 使用 named dense + native sparse/IDF；旧 dense 索引通过 `scripts/migrate_sparse_index.py` 补齐，sidecar 计数未追平前自动回退旧路径。
+- 入库先 upsert 成功，再替换上传文件和清理旧版本，避免解析/Embedding 失败时丢失原有可用版本。
+- grounded Prompt 使用 `[S1]`、`[S2]` 与 API `citations` 对齐，评测脚本会把缺失/越界引用记录为 Bad Case。
 - `score_threshold=0.3` 是第一版检索质量闸门，低于阈值的片段不进入 Prompt。
 - fallback 和 grounded 分离，避免把模型通用知识误标为知识库来源。
 - metadata 问题单独处理，避免用户问“知识库有哪些文件”时模型凭空猜测。
@@ -414,10 +448,11 @@ flowchart LR
 | `data/eval/qa_pairs.csv` | RAG 评测问题集 |
 | `data/qdrant` | Qdrant 本地持久化数据，不建议人工修改 |
 | `reports/rag_eval_results.csv` | RAG 评测脚本输出结果 |
+| `reports/rag_eval_manifest.json` | 评测运行配置、模型、collection、Git revision 和平台信息 |
+| `reports/rag_ab/` | rule/Cross-Encoder A/B 对比结果 |
+| `reports/ingestion_jobs/` | 异步入库任务状态和失败错误 |
 | `reports/agent_runs/{run_id}.json` | Agent run 完整机器可读日志 |
 | `reports/agent_runs/{run_id}.md` | Agent run Markdown 调研报告 |
-| `reports/resume_rag_agent_intern.md` | 简历草稿 |
-| `reports/interview_pack_rag_agent.md` | 面试准备材料 |
 
 当前样例论文包括：
 
@@ -434,7 +469,7 @@ flowchart LR
 进入项目目录：
 
 ```powershell
-cd C:\Users\Administrator\Desktop\code\llm-paper-rag-assistant
+cd C:\Users\29215\Documents\规划\llm-paper-rag-assistant
 ```
 
 激活虚拟环境：
@@ -496,13 +531,26 @@ ollama pull mxbai-embed-large
 .\.venv\Scripts\python.exe scripts\evaluate_rag.py --limit 3
 ```
 
+评测前预检与 A/B：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\preflight_rag_eval.py --provider rule
+.\.venv\Scripts\python.exe scripts\run_rag_ab.py --providers rule,cross_encoder
+```
+
+旧 dense 索引迁移到 native sparse sidecar：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\migrate_sparse_index.py
+```
+
 评测结果输出：
 
 ```text
 reports/rag_eval_results.csv
 ```
 
-评测脚本会记录：问题、期望答案、答案、answer_mode、source_count、source_files、source_hit、top_score。它不自动判断答案完全正确，而是用于复盘检索效果和准备面试材料。
+评测脚本会记录：问题、期望答案、答案、answer_mode、source_count、source_files、source_hit、gold chunk/page 命中、Retrieval/Citation Precision/Recall、MRR、结构化引用告警、Rerank 信息、延迟和运行 manifest。它不自动判断答案完全正确，而是用于复盘检索效果和准备面试材料。
 
 ## 9. 面试讲法
 
@@ -510,15 +558,18 @@ reports/rag_eval_results.csv
 
 可以这样概括：
 
-> 我做了一个基于 FastAPI + Qdrant + Ollama 的论文知识库 RAG 问答系统。它支持上传 PDF、Word、Markdown、TXT，后端会解析文档、按页保留来源、用 LangChain TextSplitter 切 chunk、调用 Ollama 生成 embedding，并把向量和 payload 写入 Qdrant。用户提问时，系统先检索 TopK 相关片段，再拼接 grounded Prompt 调用本地大模型，最后返回答案和 sources，包括文件名、页码、chunk_id、score 和证据等级。
+> 我做了一个基于 FastAPI + Qdrant + Ollama 的论文知识库 RAG 问答系统。它支持上传 PDF、Word、Markdown、TXT，后端通过异步 job 解析文档、按页保留来源、用 LangChain TextSplitter 切 chunk、生成标题/section 上下文，并把 dense 与 native sparse/IDF 向量和 payload 写入 Qdrant。用户提问时，系统融合语义与词法召回，再拼接 grounded Prompt 调用本地大模型，最后返回答案、sources 和 `[S1]` 对齐的 citations，包括文件名、页码、chunk_id、score 和证据等级。
 
 重点讲的能力：
 
 - 文档解析：为什么 PDF 要保留页码。
+- 异步入库：为什么先写临时文件，索引成功后再替换原文件；失败如何重试和恢复。
 - chunk 策略：chunk_size 和 overlap 如何影响召回。
-- 向量库设计：Qdrant 存向量，payload 存引用信息。
+- 向量库设计：为什么用 dense + native sparse/IDF hybrid，旧索引如何 sidecar 迁移和兼容回退。
 - 防幻觉：资料不足时不强答，严格知识库模式和补充回答模式分开。
 - sources 溯源：回答可以追溯到具体文件和页码。
+- 引用契约：Prompt、API `sources/citations` 和评测 `citation_marker_invalid` 如何保持一致。
+- 可复现评测：如何用 manifest 和 A/B 脚本比较 Rerank，而不是直接口报准确率。
 - 工程化：FastAPI 提供 RESTful API，Streamlit 只做轻量交互。
 
 面试官可能追问：
@@ -570,28 +621,31 @@ reports/rag_eval_results.csv
 - 本地可运行的大模型应用工程实践。
 - 支持 RAG 问答、引用溯源和 Agentic 调研报告生成。
 - 通过评测脚本和 run 日志增强结果可复盘性。
-- 当前是面向实习求职展示的工程化项目，后续可继续补 Rerank、权限控制和在线评测。
+- 当前是面向实习求职展示的工程化项目；真实模型 A/B、权限隔离和语义 judge 仍需要在可用服务环境中继续验证。
 
 ## 10. 当前局限与后续优化
 
 当前局限：
 
-- 还没有接入 Rerank，复杂问题可能召回弱相关片段。
-- 中文问题检索英文论文时可能存在跨语言召回噪声。
-- 文档管理还比较基础，目前没有删除文档、重建索引、版本管理和权限控制。
+- 默认 Rerank 是规则版，Cross-Encoder 已提供可选实现；模型效果需要通过真实 A/B 运行确认，不能用固定 fixture 推断。
+- Qdrant 原生 sparse/IDF hybrid 已接入；历史 dense 索引需要执行迁移脚本，sidecar 不完整时会回退兼容路径。
+- 文档入库已支持异步 job、失败重试和进程重启恢复，但生产环境仍应替换为 Redis/PostgreSQL 队列和可观测任务系统。
+- 中文问题检索英文论文时可能存在跨语言召回噪声，仍需要多路 query、跨语言 embedding 或人工标注验证。
+- 文档已有删除、重建、内容哈希、索引版本和引用字段，权限控制、租户隔离仍待补充。
 - Agent 是限定流程内的 LangGraph 工作流，不是完全自主规划型 Agent。
-- 评测脚本只记录答案和 sources，还没有自动评分或人工评分表。
+- 评测脚本已经输出 Retrieval/Citation 指标、引用契约告警、答案词面回归和 latency；语义正确率仍需要人工复核或 judge。
 - Streamlit 页面适合展示和学习，不是完整产品级前端。
 
 后续优化方向：
 
 | 优化方向 | 具体做法 | 对面试的价值 |
 |---|---|---|
-| Rerank | 在 Qdrant TopK 后增加 bge-reranker 或 LLM rerank | 体现检索质量优化能力 |
+| Rerank | 对比规则 Rerank 与 Cross-Encoder，并记录 Recall/MRR/Citation/latency | 体现检索质量优化和实验能力 |
+| Native Hybrid | 用 Qdrant named dense + sparse/IDF，旧索引通过 sidecar 迁移 | 体现 lexical + semantic 检索和兼容迁移能力 |
 | Query Rewrite | 将中文问题改写为英文检索 query 或多路 query | 解决中文问英文论文的召回噪声 |
-| 文档管理 | 增加删除文档、按文件重建索引、重复文档检测 | 更接近企业知识库系统 |
+| 文档管理 | 在已有异步 job 基础上增加 Redis/PostgreSQL 队列、租户隔离和权限 | 更接近企业知识库系统 |
 | 权限控制 | 增加用户、文档权限、知识库隔离 | 适合企业 RAG 场景 |
-| 评测看板 | 统计 source_hit、answer_mode、top_score、人工评分 | 体现可评估、可迭代能力 |
+| 评测看板 | 展示 source_hit、Retrieval/Citation、citation warnings、answer_mode、top_score、人工评分 | 体现可评估、可迭代能力 |
 | Agent 动态工具调用 | 让 Agent 根据状态选择是否继续检索、是否改写 query | 更接近真实 Agentic RAG |
 | 报告导出增强 | 支持 PDF/Word 报告导出 | 更适合演示和交付 |
 

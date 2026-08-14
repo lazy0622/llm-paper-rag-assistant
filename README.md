@@ -18,9 +18,9 @@
 |---|---|
 | 后端 API | FastAPI, Pydantic, RESTful API |
 | 前端展示 | Streamlit |
-| RAG 链路 | LangChain TextSplitter, LangChain PromptTemplate, Embedding, TopK 检索 |
+| RAG 链路 | LangChain TextSplitter, LangChain PromptTemplate, Embedding, Native Sparse + Dense Hybrid, TopK 检索 |
 | Agent 编排 | LangGraph StateGraph |
-| 向量数据库 | Qdrant |
+| 向量数据库 | Qdrant（dense 向量 + 原生 sparse/IDF lexical index） |
 | 本地模型 | Ollama, qwen2.5:7b, mxbai-embed-large |
 | 文档解析 | PyMuPDF, python-docx, Markdown/TXT |
 | 工程环境 | Docker Compose, Linux, Python venv |
@@ -40,11 +40,14 @@ flowchart TD
     Documents --> Parse["文档解析"]
     Parse --> Split["chunk 切分"]
     Split --> Embed["Embedding"]
-    Embed --> Qdrant["Qdrant 向量库"]
+    Embed --> Dense["Dense Embedding"]
+    Parse --> Sparse["Native Sparse Encoder"]
+    Dense --> Qdrant["Qdrant Hybrid Collection"]
+    Sparse --> Qdrant
 
     Chat --> Rewrite["Query Rewrite"]
     Rewrite --> Retrieve["Semantic + Keyword Recall"]
-    Retrieve --> Rerank["Rule Reranker"]
+    Retrieve --> Rerank["Rule / Cross-Encoder Reranker"]
     Rerank --> Prompt["Grounded Prompt"]
     Prompt --> LLM["Ollama / 推理网关"]
     Rerank --> Sources["sources 溯源"]
@@ -66,11 +69,11 @@ flowchart LR
     Rewrite --> Query["检索 query"]
     Query --> Embed["query embedding"]
     Embed --> Semantic["Qdrant semantic TopK"]
-    Query --> Keyword["payload keyword recall"]
+    Query --> Keyword["Qdrant native sparse recall"]
     Semantic --> Merge["候选融合"]
     Keyword --> Merge
     Merge --> RRF["RRF + keyword overlap"]
-    RRF --> Rerank["rule reranker"]
+    RRF --> Rerank["rule or cross-encoder reranker"]
     Rerank --> TopSources["Top sources"]
     TopSources --> Answer["原问题 + sources 生成回答"]
 ```
@@ -78,8 +81,9 @@ flowchart LR
 说明：
 
 - Query Rewrite 只用于检索，最终回答仍使用用户原问题。
-- 当前 Rerank 是规则版，可插拔为后续 cross-encoder reranker，但本项目不夸大为已接入模型 reranker。
-- sources 返回 `score / keyword_score / rerank_score / rrf_score / final_score / retrieval_source / semantic_rank / keyword_rank`，便于解释检索质量。
+- 默认 Rerank 是规则版；配置 `RERANKER_PROVIDER=cross_encoder` 后可懒加载 Cross-Encoder，依赖和启动方式见 `requirements-reranker.txt`。
+- 新索引同时写入旧 dense collection 和 `llm_papers_hybrid`；hybrid collection 使用命名 dense 向量与 Qdrant 原生 sparse/IDF 向量，旧索引可用迁移脚本补齐。
+- sources 返回 `citation_id / score / keyword_score / rerank_score / rrf_score / final_score / retrieval_source / semantic_rank / keyword_rank`，回答额外返回 `[S1]` 结构化引用、文档标题、section 和 citation warnings。
 
 ## 5. RAG 评测与 Bad Case 分析流程
 
@@ -87,10 +91,11 @@ flowchart LR
 flowchart TD
     QA["data/eval/qa_pairs.csv"] --> Batch["批量调用 RAG"]
     Batch --> Record["记录 rewritten_query / answer_mode / sources"]
-    Record --> Metrics["统计 source_hit / top_score / rerank_score"]
+    Record --> Metrics["统计 Recall / MRR / Citation / Answer overlap / latency"]
     Metrics --> BadCase["Bad Case 分类"]
     BadCase --> CSV["reports/rag_eval_results.csv"]
     BadCase --> MD["reports/project_metrics.md"]
+    BadCase --> JSON["reports/rag_eval_summary.json"]
 ```
 
 Bad Case 类型包括：
@@ -99,12 +104,15 @@ Bad Case 类型包括：
 - `strict_no_answer`：严格知识库模式下拒答。
 - `no_sources`：没有可用 sources。
 - `expected_source_missed`：没有命中期望来源文件。
+- `gold_chunk_missed`：配置了 `gold_chunk_ids`，但 Top-K 没有命中标注 chunk。
 - `low_top_score`：最高相似度偏低。
+- `low_answer_overlap`：答案与期望答案的词面重叠偏低，仅作为回归提示，不等于语义错误。
+- `citation_marker_invalid`：grounded 回答缺少 `[S1]` 标记或引用了不存在的 source ID。
 
 ## 6. 快速启动
 
 ```powershell
-cd C:\Users\Administrator\Desktop\code\llm-paper-rag-assistant
+cd C:\Users\29215\Documents\规划\llm-paper-rag-assistant
 .\.venv\Scripts\Activate.ps1
 docker compose up -d qdrant
 uvicorn app.main:app --reload
@@ -142,6 +150,8 @@ ollama pull mxbai-embed-large
 | `GET /health` | 服务健康检查 |
 | `GET /documents` | 查看知识库文件清单 |
 | `POST /documents/upload` | 上传并入库文档 |
+| `GET /documents/jobs` | 查看异步入库任务 |
+| `GET /documents/jobs/{job_id}` | 查看单个入库任务状态、重试次数和错误 |
 | `DELETE /documents/{file_name}` | 删除指定文件的向量索引 |
 | `POST /documents/{file_name}/reindex` | 基于已上传原文件重建索引 |
 | `POST /chat` | 基于知识库问答，返回 `rewritten_query` 和 sources |
@@ -170,9 +180,13 @@ ollama pull mxbai-embed-large
   "rewritten_query": "limitations of relying only on parametric memory in RAG paper",
   "answer_mode": "grounded",
   "answer": "...",
-  "sources": []
+  "sources": [{"citation_id": "S1", "file_name": "paper.pdf", "page": 3}],
+  "citations": [{"citation_id": "S1", "file_name": "paper.pdf", "page": 3}],
+  "citation_warnings": []
 }
 ```
+
+文档上传现在是异步任务：接口先返回 `status=queued` 和 `job_id`，后台完成解析、切分、Embedding、Qdrant upsert 后才替换原文件；失败会持久化错误并按配置重试。可通过 `GET /documents/jobs/{job_id}` 轮询。
 
 ## 8. 评测与证据
 
@@ -182,10 +196,28 @@ ollama pull mxbai-embed-large
 .\.venv\Scripts\python.exe scripts\evaluate_rag.py
 ```
 
+真实评测前先检查 Qdrant、Ollama/推理网关和可选 Cross-Encoder：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\preflight_rag_eval.py --provider rule
+```
+
+规则 Rerank 与 Cross-Encoder 的隔离 A/B 评测：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_rag_ab.py
+```
+
 快速评测前 3 条：
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\evaluate_rag.py --limit 3
+```
+
+校验 QA 标注是否仍匹配当前切分器：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\validate_eval_ground_truth.py
 ```
 
 输出文件：
@@ -193,10 +225,22 @@ ollama pull mxbai-embed-large
 ```text
 reports/rag_eval_results.csv
 reports/project_metrics.md
+reports/rag_eval_summary.json
+reports/rag_eval_manifest.json
 reports/rag_chat_runs.jsonl
+reports/rag_ab/ab_comparison.json
+reports/rag_ab/ab_comparison.md
 ```
 
-当前本地完整评测结果：
+已有旧 dense 索引时，启动 Qdrant 后执行一次 sparse sidecar 迁移：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\migrate_sparse_index.py
+```
+
+评测数据集可以继续使用现有的 `question / expected_answer / source_file / difficulty` 字段；如果需要精确评测证据，可增加 `gold_source_files / gold_chunk_ids / gold_pages / top_k`。详细格式见 [`docs/evaluation.md`](docs/evaluation.md)。
+
+仓库原始版本记录的本地完整评测结果（不是本次修改后的重新运行结果）：
 
 ```text
 评测问题数：20
@@ -229,20 +273,23 @@ docs/screenshots/README.md
 
 ## 10. 当前局限与后续优化
 
-- 当前 Rerank 是规则版，不是 cross-encoder reranker；复杂问题仍可能召回弱相关片段。
+- 默认 Rerank 仍是规则版；Cross-Encoder 已提供可选实现，首次使用会下载配置的模型。
+- 已实现 Qdrant 原生 sparse/IDF + dense hybrid；历史 dense 索引需要执行迁移脚本，迁移不完整时系统会自动回退旧 dense + keyword 路径。
 - Query Rewrite 依赖本地 LLM，偶尔可能改写偏题，评测时需要记录并分析。
-- 文档管理已支持文件级删除和重建索引，后续可继续补版本管理和权限控制。
+- 文档解析已保留文档标题、section、页码、内容哈希、document_id 和 index_version；权限控制仍待补充。
+- 文档入库已改为带 JSON 持久化、重试和重启恢复的异步任务；生产环境仍应替换为 Redis/PostgreSQL 队列和更完整的任务监控。
 - Agent 是限定流程内的 LangGraph 工作流，不是完全自主规划型 Agent。
-- 评测脚本和 Streamlit 评测页已能记录结果，后续可继续接入 RAGAS 或更完整的自动评分。
+- 评测脚本现在已记录 Retrieval Precision/Recall、MRR、Citation Precision/Recall、结构化引用告警、答案词面回归指标、延迟和运行配置；答案语义正确率仍需要人工复核或后续 judge。
 
 后续优先级：
 
 | 优先级 | 优化项 | 价值 |
 |---|---|---|
-| P0 | 完整跑 QA 并整理 Bad Case | 为检索质量分析和后续优化提供真实评测证据 |
-| P1 | 接入 cross-encoder reranker | 强化检索质量优化能力 |
-| P1 | 增加文档版本管理和权限控制 | 更接近企业知识库需求 |
-| P2 | 增加 RAGAS 自动评分 | 补充 faithfulness / context precision 等指标 |
+| P0 | 启动真实 Qdrant/Ollama 后跑 `run_rag_ab.py` 并保存 manifest | 形成可复现、可解释的检索质量证据 |
+| P0 | 给 QA 样本持续补充 `gold_chunk_ids` / `gold_pages` | 把文件级命中升级为证据级 Recall/MRR |
+| P1 | 增加文档权限和租户隔离 | 更接近企业知识库需求 |
+| P1 | 用 judge/人工复核补充 faithfulness 评分 | 避免把 Token F1 当成语义正确率 |
+| P2 | 增加 RAGAS 或自建 judge 适配层 | 补充 faithfulness / context precision 等指标 |
 
 ## 11. 推理网关联动说明
 

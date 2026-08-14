@@ -53,6 +53,20 @@ def reindex_document(file_name: str) -> dict:
     return response.json()
 
 
+def list_ingestion_jobs(limit: int = 20) -> list[dict]:
+    with httpx.Client(timeout=30, trust_env=False) as client:
+        response = client.get(f"{API_BASE_URL}/documents/jobs", params={"limit": limit})
+    response.raise_for_status()
+    return response.json()
+
+
+def get_ingestion_job(job_id: str) -> dict:
+    with httpx.Client(timeout=30, trust_env=False) as client:
+        response = client.get(f"{API_BASE_URL}/documents/jobs/{job_id}")
+    response.raise_for_status()
+    return response.json()
+
+
 def ask_question(question: str, top_k: int, allow_fallback: bool, answer_style: str) -> dict:
     payload = {
         "question": question,
@@ -122,10 +136,13 @@ def render_sidebar() -> tuple[int, bool, str]:
         st.header("文档入库")
         uploaded_file = st.file_uploader("上传 PDF / DOCX / Markdown / TXT", type=["pdf", "docx", "md", "txt"])
         if uploaded_file and st.button("上传并向量化入库", use_container_width=True):
-            with st.spinner("正在解析、切分、向量化并写入 Qdrant..."):
+            with st.spinner("正在创建异步入库任务..."):
                 try:
                     result = upload_document(uploaded_file)
-                    st.success(f"入库成功：{result['chunks']} 个 chunks")
+                    st.info(
+                        f"入库任务已创建：{result.get('job_id')}，当前状态：{result.get('status')}。"
+                        "后台完成后会自动替换原文件。"
+                    )
                     st.json(result)
                 except httpx.HTTPStatusError as exc:
                     st.error(f"入库失败：{exc.response.text}")
@@ -142,6 +159,9 @@ def render_sidebar() -> tuple[int, bool, str]:
         st.divider()
         st.header("当前知识库文件")
         _render_document_sidebar()
+
+        st.divider()
+        _render_ingestion_jobs()
 
     return top_k, allow_fallback, answer_style
 
@@ -167,7 +187,7 @@ def _render_document_sidebar() -> None:
             if st.button("重建索引", key=f"reindex_{file_name}", use_container_width=True):
                 try:
                     result = reindex_document(file_name)
-                    st.success(f"重建完成：{result['affected_chunks']} chunks")
+                    st.info(f"重建任务已创建：{result.get('job_id')}，当前状态：{result.get('status')}")
                     st.rerun()
                 except httpx.HTTPError as exc:
                     st.error(f"重建失败：{exc}")
@@ -179,6 +199,32 @@ def _render_document_sidebar() -> None:
                     st.rerun()
                 except httpx.HTTPError as exc:
                     st.error(f"删除失败：{exc}")
+
+
+def _render_ingestion_jobs() -> None:
+    st.header("最近入库任务")
+    try:
+        jobs = list_ingestion_jobs(limit=10)
+    except httpx.HTTPError as exc:
+        st.caption(f"任务列表读取失败：{exc}")
+        return
+
+    if st.button("刷新任务状态", key="refresh_ingestion_jobs", use_container_width=True):
+        st.rerun()
+    if not jobs:
+        st.caption("暂无异步入库任务。")
+        return
+
+    for job in jobs:
+        status = job.get("status", "unknown")
+        label = (
+            f"{job.get('file_name')} | {status} | "
+            f"attempts={job.get('attempts', 0)}/{job.get('max_attempts', 0)}"
+        )
+        with st.expander(label, expanded=status in {"queued", "running", "retrying"}):
+            st.json(job)
+            if job.get("error"):
+                st.error(job["error"])
 
 
 def render_rag_chat(top_k: int, allow_fallback: bool, answer_style: str) -> None:
@@ -211,6 +257,8 @@ def render_rag_chat(top_k: int, allow_fallback: bool, answer_style: str) -> None
                         "rewritten_query": result.get("rewritten_query"),
                         "answer_mode": result.get("answer_mode", "grounded"),
                         "sources": result.get("sources", []),
+                        "citations": result.get("citations", []),
+                        "citation_warnings": result.get("citation_warnings", []),
                     }
                 )
                 st.session_state.last_rag_question = question
@@ -239,11 +287,13 @@ def _render_assistant_message(message: dict) -> None:
         st.caption(f"run_id: {message.get('run_id')}")
     if message.get("rewritten_query"):
         st.caption(f"检索改写 query: {message.get('rewritten_query')}")
+    for warning in message.get("citation_warnings", []):
+        st.warning(f"引用契约告警：{warning}")
     st.markdown(message.get("content", ""))
-    _render_sources(message.get("sources", []), answer_mode)
+    _render_sources(message.get("sources", []), answer_mode, message.get("citations", []))
 
 
-def _render_sources(sources: list[dict], answer_mode: str) -> None:
+def _render_sources(sources: list[dict], answer_mode: str, citations: list[dict] | None = None) -> None:
     if not sources:
         if answer_mode == "fallback":
             st.info("补充回答不展示引用来源，因为答案来自本地模型通用知识，不来自知识库 sources。")
@@ -254,10 +304,19 @@ def _render_sources(sources: list[dict], answer_mode: str) -> None:
         return
 
     st.subheader("引用来源")
-    st.caption("sources 用于人工核验；score 是相似度，不等于事实证明。")
+    st.caption("sources 用于人工核验；score 是相似度，不等于事实证明。引用编号与回答中的 [S1]、[S2] 对齐。")
+    if citations:
+        citation_ids = ", ".join(item.get("citation_id", "") for item in citations if item.get("citation_id"))
+        if citation_ids:
+            st.caption(f"API citations: {citation_ids}")
     for index, source in enumerate(sources, start=1):
         title = _build_source_title(index, source)
         with st.expander(title):
+            st.caption(f"citation_id: {source.get('citation_id') or f'S{index}'}")
+            if source.get("document_title"):
+                st.caption(f"document_title: {source.get('document_title')}")
+            if source.get("section"):
+                st.caption(f"section: {source.get('section')}")
             st.caption(f"chunk_id: {source.get('chunk_id')}")
             _render_source_scores(source)
             if source.get("evidence_level"):
@@ -269,7 +328,8 @@ def _render_sources(sources: list[dict], answer_mode: str) -> None:
 
 
 def _build_source_title(index: int, source: dict) -> str:
-    title = f"{index}. {source.get('file_name', 'unknown')}"
+    citation_id = source.get("citation_id") or f"S{index}"
+    title = f"[{citation_id}] {source.get('file_name', 'unknown')}"
     if source.get("page") is not None:
         title += f" | 第 {source.get('page')} 页"
     if source.get("score") is not None:

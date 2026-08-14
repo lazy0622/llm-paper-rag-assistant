@@ -12,6 +12,10 @@ class ChatRequest(BaseModel):
 
 class SourceChunk(BaseModel):
     file_name: str
+    citation_id: str | None = None
+    document_title: str | None = None
+    section: str | None = None
+    parent_chunk_id: str | None = None
     page: int | None = None
     chunk_id: str | None = None
     content: str
@@ -23,6 +27,7 @@ class SourceChunk(BaseModel):
     semantic_rank: int | None = None
     keyword_rank: int | None = None
     retrieval_source: str | None = None
+    reranker_provider: str | None = None
     evidence_level: Literal[
         "strong_support",
         "partial_support",
@@ -33,24 +38,56 @@ class SourceChunk(BaseModel):
     evidence_reason: str | None = None
 
 
+class SourceCitation(BaseModel):
+    citation_id: str
+    file_name: str
+    page: int | None = None
+    chunk_id: str | None = None
+    document_title: str | None = None
+    section: str | None = None
+
+
 class ChatResponse(BaseModel):
     run_id: str
     answer: str
     answer_mode: Literal["grounded", "fallback", "no_answer", "metadata"]
     rewritten_query: str | None = None
     sources: list[SourceChunk] = Field(default_factory=list)
+    citations: list[SourceCitation] = Field(default_factory=list)
+    citation_warnings: list[str] = Field(default_factory=list)
 
 
 class IngestResponse(BaseModel):
     file_name: str
     chunks: int
     status: str
+    job_id: str | None = None
+    document_id: str | None = None
+    content_hash: str | None = None
+    error: str | None = None
+
+
+class IngestionJobResponse(BaseModel):
+    job_id: str
+    file_name: str
+    status: Literal["queued", "running", "retrying", "succeeded", "failed"]
+    attempts: int = 0
+    max_attempts: int = 3
+    chunks: int = 0
+    document_id: str | None = None
+    content_hash: str | None = None
+    error: str | None = None
+    created_at: str
+    started_at: str | None = None
+    finished_at: str | None = None
 
 
 class DocumentSummary(BaseModel):
     file_name: str
     chunks: int
     pages: list[int] = Field(default_factory=list)
+    document_id: str | None = None
+    content_hash: str | None = None
 
 
 class DocumentActionResponse(BaseModel):

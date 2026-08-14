@@ -3,8 +3,8 @@ import uuid
 from fastapi import APIRouter, HTTPException
 
 from app.config import settings
-from app.schemas import ChatRequest, ChatResponse, SourceChunk
-from app.services.evidence import annotate_sources
+from app.schemas import ChatRequest, ChatResponse, SourceChunk, SourceCitation
+from app.services.evidence import annotate_sources, validate_citation_markers
 from app.services.query_rewriter import rewrite_query_for_retrieval
 from app.services.rag_chain import (
     answer_with_context,
@@ -85,7 +85,9 @@ def chat(request: ChatRequest) -> ChatResponse:
         raise HTTPException(status_code=500, detail=f"Chat failed: {exc}") from exc
 
     source_chunks = annotate_sources(chunks, request.question) if answer_mode == "grounded" else []
-    sources = [_to_source_chunk(chunk) for chunk in source_chunks]
+    sources = [_to_source_chunk(chunk, index=index) for index, chunk in enumerate(source_chunks, start=1)]
+    citations = [_to_source_citation(chunk, index=index) for index, chunk in enumerate(source_chunks, start=1)]
+    citation_warnings = validate_citation_markers(answer, len(source_chunks)) if answer_mode == "grounded" else []
     top_score = source_chunks[0].get("score") if source_chunks else None
     log_rag_chat(
         run_id=run_id,
@@ -108,6 +110,8 @@ def chat(request: ChatRequest) -> ChatResponse:
         answer_mode=answer_mode,
         rewritten_query=rewritten_query,
         sources=sources,
+        citations=citations,
+        citation_warnings=citation_warnings,
     )
 
 
@@ -116,9 +120,13 @@ def chat_logs(limit: int = 50) -> list[dict]:
     return read_recent_rag_logs(limit=limit)
 
 
-def _to_source_chunk(chunk: dict) -> SourceChunk:
+def _to_source_chunk(chunk: dict, *, index: int) -> SourceChunk:
     return SourceChunk(
         file_name=chunk["file_name"],
+        citation_id=f"S{index}",
+        document_title=chunk.get("document_title"),
+        section=chunk.get("section"),
+        parent_chunk_id=chunk.get("parent_chunk_id"),
         page=chunk.get("page"),
         chunk_id=chunk.get("chunk_id"),
         content=chunk.get("content", ""),
@@ -130,8 +138,20 @@ def _to_source_chunk(chunk: dict) -> SourceChunk:
         semantic_rank=chunk.get("semantic_rank"),
         keyword_rank=chunk.get("keyword_rank"),
         retrieval_source=chunk.get("retrieval_source"),
+        reranker_provider=chunk.get("reranker_provider"),
         evidence_level=chunk.get("evidence_level"),
         evidence_reason=chunk.get("evidence_reason"),
+    )
+
+
+def _to_source_citation(chunk: dict, *, index: int) -> SourceCitation:
+    return SourceCitation(
+        citation_id=f"S{index}",
+        file_name=chunk["file_name"],
+        page=chunk.get("page"),
+        chunk_id=chunk.get("chunk_id"),
+        document_title=chunk.get("document_title"),
+        section=chunk.get("section"),
     )
 
 
